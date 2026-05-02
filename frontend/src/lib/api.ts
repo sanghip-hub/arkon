@@ -4,11 +4,13 @@
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5055";
+const REQUEST_TIMEOUT_MS = 30_000;
 
 type RequestOptions = {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
+  timeoutMs?: number;
 };
 
 class ApiError extends Error {
@@ -39,11 +41,15 @@ export async function api<T = unknown>(
   path: string,
   options: RequestOptions = {}
 ): Promise<T> {
-  const { method = "GET", body, headers = {} } = options;
+  const { method = "GET", body, headers = {}, timeoutMs = REQUEST_TIMEOUT_MS } = options;
   const token = getToken();
+
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
 
   const config: RequestInit = {
     method,
+    signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -55,7 +61,17 @@ export async function api<T = unknown>(
     config.body = JSON.stringify(body);
   }
 
-  const res = await fetch(`${API_BASE}${path}`, config);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, config);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(0, "Request timed out");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timerId);
+  }
 
   if (!res.ok) {
     let data;
@@ -80,16 +96,31 @@ export async function api<T = unknown>(
  */
 export async function apiUpload<T = unknown>(
   path: string,
-  formData: FormData
+  formData: FormData,
+  timeoutMs = 120_000
 ): Promise<T> {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: formData,
-  });
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(0, "Upload timed out");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timerId);
+  }
 
   if (!res.ok) {
     let data;

@@ -6,17 +6,19 @@ import uuid
 from typing import Optional
 
 from arq.connections import ArqRedis, create_pool
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form, Query
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db, async_session_factory
-from app.database.models import Source, SourceChunk, SourceInsight, ChunkImage
+from app.database.models import Source, SourceChunk, SourceInsight, ChunkImage, Employee
 from app.database.repository import Repository
+from app.services.auth_service import require_admin
 
 router = APIRouter()
 
@@ -46,6 +48,11 @@ class SourceResponse(BaseModel):
     job_id: Optional[str] = None
     chunk_count: int = 0
     image_count: int = 0
+    knowledge_type_id: Optional[uuid.UUID] = None
+    knowledge_type_name: Optional[str] = None
+    knowledge_type_color: Optional[str] = None
+    department_id: Optional[uuid.UUID] = None
+    department_name: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -61,6 +68,14 @@ class SourceDetail(SourceResponse):
 class SourceCreateURL(BaseModel):
     url: str
     title: Optional[str] = None
+    knowledge_type_id: Optional[uuid.UUID] = None
+    department_id: Optional[uuid.UUID] = None
+
+
+class SourceUpdate(BaseModel):
+    title: Optional[str] = None
+    knowledge_type_id: Optional[uuid.UUID] = None
+    department_id: Optional[uuid.UUID] = None
 
 
 async def _get_source_counts(session: AsyncSession, source_id: uuid.UUID) -> tuple[int, int]:
@@ -89,6 +104,11 @@ def _to_response(source: Source, chunk_count: int = 0, image_count: int = 0) -> 
         job_id=source.job_id,
         chunk_count=chunk_count,
         image_count=image_count,
+        knowledge_type_id=source.knowledge_type_id,
+        knowledge_type_name=source.knowledge_type.name if source.knowledge_type else None,
+        knowledge_type_color=source.knowledge_type.color if source.knowledge_type else None,
+        department_id=source.department_id,
+        department_name=source.department.name if source.department else None,
         created_at=source.created_at.isoformat(),
         updated_at=source.updated_at.isoformat(),
     )
@@ -96,9 +116,28 @@ def _to_response(source: Source, chunk_count: int = 0, image_count: int = 0) -> 
 
 # --- List all sources ---
 @router.get("/sources", response_model=list[SourceResponse])
-async def list_sources(db: AsyncSession = Depends(get_db)):
-    repo = Repository(db)
-    sources = await repo.get_all(Source, order_by=Source.created_at.desc())
+async def list_sources(
+    knowledge_type_id: Optional[uuid.UUID] = Query(None),
+    department_id: Optional[uuid.UUID] = Query(None),
+    status: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    _admin: Employee = Depends(require_admin),
+):
+    stmt = (
+        select(Source)
+        .options(selectinload(Source.knowledge_type), selectinload(Source.department))
+        .order_by(Source.created_at.desc())
+    )
+    if knowledge_type_id:
+        stmt = stmt.where(Source.knowledge_type_id == knowledge_type_id)
+    if department_id:
+        stmt = stmt.where(Source.department_id == department_id)
+    if status:
+        stmt = stmt.where(Source.status == status)
+
+    result = await db.execute(stmt)
+    sources = result.scalars().all()
+
     results = []
     for s in sources:
         cc, ic = await _get_source_counts(db, s.id)
@@ -108,9 +147,17 @@ async def list_sources(db: AsyncSession = Depends(get_db)):
 
 # --- Get single source detail ---
 @router.get("/sources/{source_id}")
-async def get_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    repo = Repository(db)
-    source = await repo.get_by_id(Source, source_id)
+async def get_source(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _admin: Employee = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Source)
+        .options(selectinload(Source.knowledge_type), selectinload(Source.department))
+        .where(Source.id == source_id)
+    )
+    source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
 
@@ -135,30 +182,22 @@ async def get_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         except Exception:
             pass
 
+    base = _to_response(source, cc, ic)
     return SourceDetail(
-        id=source.id,
-        title=source.title,
-        source_type=source.source_type,
-        file_name=source.file_name,
-        url=source.url,
-        status=source.status,
-        error_message=source.error_message,
-        progress=source.progress,
-        progress_message=source.progress_message,
-        job_id=source.job_id,
-        chunk_count=cc,
-        image_count=ic,
+        **base.model_dump(),
         full_text=source.full_text,
         summary=summary,
         download_url=download_url,
-        created_at=source.created_at.isoformat(),
-        updated_at=source.updated_at.isoformat(),
     )
 
 
 # --- Get progress for a source ---
 @router.get("/sources/{source_id}/progress")
-async def get_source_progress(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_source_progress(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _admin: Employee = Depends(require_admin),
+):
     """Get real-time progress for a source being processed."""
     source = await db.get(Source, source_id)
     if not source:
@@ -179,7 +218,10 @@ async def get_source_progress(source_id: uuid.UUID, db: AsyncSession = Depends(g
 async def upload_source(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
+    knowledge_type_id: Optional[str] = Form(None),
+    department_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
+    _admin: Employee = Depends(require_admin),
 ):
     file_data = await file.read()
     repo = Repository(db)
@@ -191,6 +233,8 @@ async def upload_source(
         status="pending",
         progress=0,
         progress_message="Dang cho xu ly...",
+        knowledge_type_id=uuid.UUID(knowledge_type_id) if knowledge_type_id else None,
+        department_id=uuid.UUID(department_id) if department_id else None,
     )
     source = await repo.create(source)
     await db.commit()
@@ -208,7 +252,14 @@ async def upload_source(
     # Save job ID
     source.job_id = job.job_id
     await db.commit()
-    await db.refresh(source)
+
+    # Reload with relationships for response
+    result = await db.execute(
+        select(Source)
+        .options(selectinload(Source.knowledge_type), selectinload(Source.department))
+        .where(Source.id == source.id)
+    )
+    source = result.scalar_one()
 
     logger.info(f"Enqueued ingestion job {job.job_id} for source {source.id}")
 
@@ -228,6 +279,7 @@ async def upload_source(
 async def add_url_source(
     req: SourceCreateURL,
     db: AsyncSession = Depends(get_db),
+    _admin: Employee = Depends(require_admin),
 ):
     repo = Repository(db)
     source = Source(
@@ -237,6 +289,8 @@ async def add_url_source(
         status="pending",
         progress=0,
         progress_message="Dang cho xu ly...",
+        knowledge_type_id=req.knowledge_type_id,
+        department_id=req.department_id,
     )
     source = await repo.create(source)
     await db.commit()
@@ -247,7 +301,14 @@ async def add_url_source(
     job = await pool.enqueue_job("ingest_url_task", str(source.id))
     source.job_id = job.job_id
     await db.commit()
-    await db.refresh(source)
+
+    # Reload with relationships for response
+    result = await db.execute(
+        select(Source)
+        .options(selectinload(Source.knowledge_type), selectinload(Source.department))
+        .where(Source.id == source.id)
+    )
+    source = result.scalar_one()
 
     logger.info(f"Enqueued URL ingestion job {job.job_id} for source {source.id}")
 
@@ -262,9 +323,45 @@ async def add_url_source(
     return _to_response(source)
 
 
+# --- Update source metadata ---
+@router.patch("/sources/{source_id}", response_model=SourceResponse)
+async def update_source(
+    source_id: uuid.UUID,
+    body: SourceUpdate,
+    db: AsyncSession = Depends(get_db),
+    _admin: Employee = Depends(require_admin),
+):
+    source = await db.get(Source, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    if body.title is not None:
+        source.title = body.title
+    if body.knowledge_type_id is not None:
+        source.knowledge_type_id = body.knowledge_type_id
+    if body.department_id is not None:
+        source.department_id = body.department_id
+
+    await db.flush()
+
+    # Reload with relationships
+    result = await db.execute(
+        select(Source)
+        .options(selectinload(Source.knowledge_type), selectinload(Source.department))
+        .where(Source.id == source_id)
+    )
+    source = result.scalar_one()
+    cc, ic = await _get_source_counts(db, source_id)
+    return _to_response(source, cc, ic)
+
+
 # --- Delete source ---
 @router.delete("/sources/{source_id}")
-async def delete_source(source_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_source(
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _admin: Employee = Depends(require_admin),
+):
     repo = Repository(db)
     source = await repo.get_by_id(Source, source_id)
     if not source:

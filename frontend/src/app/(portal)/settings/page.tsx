@@ -34,6 +34,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
     async function load() {
@@ -52,12 +53,13 @@ export default function SettingsPage() {
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
+    setSaveError("");
     try {
       await api("/api/settings", { method: "PUT", body: config });
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Save failed");
+      setSaveError(err instanceof Error ? err.message : "Save failed");
     } finally {
       setSaving(false);
     }
@@ -121,19 +123,27 @@ export default function SettingsPage() {
           onApiKeyChange={(v) => updateField("vision_api_key", v)}
         />
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="bg-primary text-primary-foreground px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-          >
-            {saving ? "Saving..." : "Save Settings"}
-          </button>
-          {saved && (
-            <span className="text-sm text-green-600 flex items-center gap-1">
-              <span className="material-symbols-outlined text-sm filled">check_circle</span>
-              Saved successfully
-            </span>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="bg-primary text-primary-foreground px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {saving ? "Saving..." : "Save Settings"}
+            </button>
+            {saved && (
+              <span className="text-sm text-green-600 flex items-center gap-1">
+                <span className="material-symbols-outlined text-sm filled">check_circle</span>
+                Saved successfully
+              </span>
+            )}
+          </div>
+          {saveError && (
+            <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg flex items-center gap-2">
+              <span className="material-symbols-outlined text-base">error</span>
+              {saveError}
+            </p>
           )}
         </div>
       </div>

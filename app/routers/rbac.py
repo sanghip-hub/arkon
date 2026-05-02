@@ -189,8 +189,8 @@ async def create_employee(
 
     if not body.password:
         raise HTTPException(400, "Password is required")
-    if len(body.password) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters")
+    if len(body.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
     if body.role not in ("admin", "employee"):
         raise HTTPException(400, "Role must be 'admin' or 'employee'")
 

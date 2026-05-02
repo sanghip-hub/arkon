@@ -11,7 +11,7 @@ This service is called by the MCP server to:
 import secrets
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -19,7 +19,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database.models import Department, Employee, KnowledgeScope, Source
+from app.database.models import Department, Employee, KnowledgeScope, ProjectMember, ProjectSource, Source
 
 
 @dataclass
@@ -31,6 +31,7 @@ class ResolvedIdentity:
     department_name: str
     allowed_knowledge_types: Optional[list[str]] = None  # None = all
     allowed_source_ids: Optional[list[str]] = None       # None = all
+    project_source_ids: list[str] = field(default_factory=list)  # always granted via projects
     is_admin: bool = False
 
 
@@ -57,10 +58,10 @@ class MCPAuthService:
             return None
 
         # Update last_connected
-        employee.last_connected = datetime.utcnow()
+        employee.last_connected = datetime.now(timezone.utc)
         await self.db.flush()
 
-        # Resolve knowledge scope
+        # Resolve knowledge scope (including project memberships)
         identity = await self._resolve_scope(employee)
         return identity
 
@@ -91,6 +92,8 @@ class MCPAuthService:
         # Merge scopes: personal overrides department
         effective_scopes = personal_scopes if personal_scopes else dept_scopes
 
+        project_source_ids = await self._resolve_project_sources(employee.id)
+
         if not effective_scopes:
             # No scopes defined → open access (default permissive)
             return ResolvedIdentity(
@@ -98,6 +101,7 @@ class MCPAuthService:
                 employee_name=employee.name,
                 department_id=employee.department_id,
                 department_name=employee.department.name if employee.department else "",
+                project_source_ids=project_source_ids,
             )
 
         # Collect grant types
@@ -122,7 +126,31 @@ class MCPAuthService:
             department_name=employee.department.name if employee.department else "",
             allowed_knowledge_types=list(allowed_types) if has_type_filter else None,
             allowed_source_ids=list(allowed_sources) if has_source_filter else None,
+            project_source_ids=project_source_ids,
         )
+
+    async def _resolve_project_sources(self, employee_id: uuid.UUID) -> list[str]:
+        """Collect source IDs from all active projects the employee is a member of."""
+        member_stmt = select(ProjectMember.project_id).where(
+            ProjectMember.employee_id == employee_id
+        )
+        member_result = await self.db.execute(member_stmt)
+        project_ids = [r[0] for r in member_result.all()]
+
+        if not project_ids:
+            return []
+
+        from app.database.models import Project
+        source_stmt = (
+            select(ProjectSource.source_id)
+            .join(Project, Project.id == ProjectSource.project_id)
+            .where(
+                ProjectSource.project_id.in_(project_ids),
+                Project.status == "active",
+            )
+        )
+        source_result = await self.db.execute(source_stmt)
+        return [str(r[0]) for r in source_result.all()]
 
     # --- Token Management ---
 
@@ -157,19 +185,44 @@ def apply_scope_filter(query, identity: ResolvedIdentity):
     """
     Apply knowledge scope filters to a SQLAlchemy query on the Source table.
 
+    Sources are accessible when any of these conditions is true:
+      1. No scope restrictions defined (open access)
+      2. Source ID is in allowed_source_ids (explicit grant)
+      3. Source knowledge_type is in allowed_knowledge_types (type-based grant)
+      4. Source is in one of the employee's active projects (project grant)
+
     Usage:
         stmt = select(Source).where(Source.status == "ready")
         stmt = apply_scope_filter(stmt, identity)
     """
+    from sqlalchemy import or_
+
+    project_uuids = [uuid.UUID(s) for s in identity.project_source_ids]
+
+    if identity.allowed_source_ids is None and identity.allowed_knowledge_types is None:
+        # Open access — only restrict to project sources if projects exist
+        if project_uuids:
+            # Open org-level access is already granted; project sources are additive, no filter needed
+            pass
+        return query
+
+    conditions = []
+
     if identity.allowed_source_ids is not None:
-        source_uuids = [uuid.UUID(s) for s in identity.allowed_source_ids]
-        query = query.where(Source.id.in_(source_uuids))
-    elif identity.allowed_knowledge_types is not None:
-        # Resolve slugs to knowledge_type IDs via subquery
+        conditions.append(Source.id.in_([uuid.UUID(s) for s in identity.allowed_source_ids]))
+
+    if identity.allowed_knowledge_types is not None:
         from app.database.models import KnowledgeType
         from sqlalchemy import select as sa_select
         kt_subq = sa_select(KnowledgeType.id).where(
             KnowledgeType.slug.in_(identity.allowed_knowledge_types)
         )
-        query = query.where(Source.knowledge_type_id.in_(kt_subq))
+        conditions.append(Source.knowledge_type_id.in_(kt_subq))
+
+    if project_uuids:
+        conditions.append(Source.id.in_(project_uuids))
+
+    if conditions:
+        query = query.where(or_(*conditions))
+
     return query

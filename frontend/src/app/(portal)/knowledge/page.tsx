@@ -15,47 +15,69 @@ export type KnowledgeType = {
   color: string;
 };
 
+export type Department = {
+  id: string;
+  name: string;
+};
+
 export type Source = {
   id: string;
   title: string;
-  file_type: string;
+  file_name?: string;
+  source_type?: string;
   status: string;
   knowledge_type_id?: string;
   knowledge_type_name?: string;
   knowledge_type_color?: string;
+  department_id?: string;
+  department_name?: string;
   created_at: string;
 };
 
 export default function KnowledgePage() {
   const [sources, setSources] = useState<Source[]>([]);
   const [types, setTypes] = useState<KnowledgeType[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
 
   const loadSources = useCallback(async () => {
     setLoading(true);
     try {
-      const params = selectedType ? `?knowledge_type=${selectedType}` : "";
-      const data = await api<{ items: Source[] }>(`/api/sources${params}`);
-      setSources(data.items || []);
+      const params = new URLSearchParams();
+      if (selectedType) {
+        const matchedType = types.find((t) => t.slug === selectedType);
+        if (matchedType) params.set("knowledge_type_id", matchedType.id);
+      }
+      if (selectedDepartment) params.set("department_id", selectedDepartment);
+
+      const query = params.toString() ? `?${params.toString()}` : "";
+      const data = await api<Source[]>(`/api/sources${query}`);
+      setSources(Array.isArray(data) ? data : []);
     } catch {
       setSources([]);
     } finally {
       setLoading(false);
     }
-  }, [selectedType]);
+  }, [selectedType, selectedDepartment, types]);
 
   useEffect(() => {
-    async function loadTypes() {
+    async function loadMeta() {
       try {
-        const data = await api<KnowledgeType[]>("/api/knowledge-types");
-        setTypes(data);
+        const [typesData, deptsData] = await Promise.all([
+          api<KnowledgeType[]>("/api/knowledge-types"),
+          api<Department[]>("/api/departments"),
+        ]);
+        setTypes(typesData);
+        setDepartments(deptsData);
       } catch {
         setTypes([]);
+        setDepartments([]);
       }
     }
-    loadTypes();
+    loadMeta();
   }, []);
 
   useEffect(() => {
@@ -87,6 +109,9 @@ export default function KnowledgePage() {
             types={types}
             selectedType={selectedType}
             onSelectType={setSelectedType}
+            departments={departments}
+            selectedDepartment={selectedDepartment}
+            onSelectDepartment={setSelectedDepartment}
           />
         </div>
 
@@ -94,6 +119,8 @@ export default function KnowledgePage() {
         <div className="lg:col-span-3">
           <KnowledgeTable
             sources={sources}
+            types={types}
+            departments={departments}
             loading={loading}
             onRefresh={loadSources}
           />
@@ -104,6 +131,7 @@ export default function KnowledgePage() {
         open={uploadOpen}
         onOpenChange={setUploadOpen}
         types={types}
+        departments={departments}
         onUploaded={loadSources}
       />
     </>

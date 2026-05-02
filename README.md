@@ -1,178 +1,189 @@
+![Arkon Banner](blob/assets/banner.png)
+
 # Arkon
 
-> Enterprise AI Control Center - built exclusively for the Claude ecosystem.
+**Enterprise knowledge management for Claude — self-hosted, on-premise.**
 
-Arkon is a platform that gives organizations centralized control over how employees use Claude. Admins manage knowledge, skills, and access policies from a single portal. Employees connect once and get the right context automatically - no manual configuration, no context switching.
-
----
-
-## Why Arkon
-
-Most enterprises adopt Claude team-by-team, with no shared knowledge, inconsistent prompting, and no visibility into how AI is being used. Arkon solves this by making Claude a managed, governed resource - like an internal system, not a public chatbot.
+Arkon gives organizations centralized control over how employees use Claude. Admins manage knowledge, access policies, and project contexts from a single portal. Employees connect once and get the right context automatically through the Model Context Protocol (MCP).
 
 ---
 
-## Core Features
+## The problem
 
-### 1. Knowledge Base (Graph RAG)
+Most organizations adopt Claude team-by-team with no shared knowledge, inconsistent context, and no visibility into how AI is being used. Every employee manually pastes documents, repeats the same background, and gets different answers depending on what they remembered to include.
 
-Centralized knowledge built as a graph - not flat documents - so Claude understands relationships between entities, not just keyword matches.
+Arkon treats Claude as a managed organizational resource — not a public chatbot.
 
-Supported knowledge types:
-- **SOPs** - internal processes and procedures
-- **Products** - specs, pricing, FAQs
-- **Projects** - status, owners, dependencies
-- **Customers** - profiles, history, context
+---
 
-Knowledge is retrieved contextually via MCP and injected into Claude's session at query time. Employees never need to paste documents manually.
+## Features
 
-### 2. Skill Sharing & Sync
+### Knowledge Base
+Upload documents (PDF, DOCX, spreadsheets, URLs) and they become semantically searchable by Claude. Knowledge is chunked, embedded, and stored with pgvector. Retrieval is contextual — Claude queries the knowledge base at runtime via MCP, not from a pasted wall of text.
 
-Skills are structured packages - not just prompt files. Each skill can contain:
+- Organize by **knowledge type** (SOP, Product, HR Policy, etc.) — admin-defined
+- Assign documents to **departments** for scoped access
+- Background ingestion pipeline with real-time progress tracking
+- Optional graph entity extraction via Neo4j
 
-```
-skill-package/
-├── manifest.json        # ID, version, dependencies, RBAC tags
-├── instruction.md       # Core prompt/instruction
-├── refs/                # Reference documents
-│   ├── tone-guide.md
-│   └── product-catalog.json
-└── scripts/             # MCP tool definitions (optional)
-    └── draft-email.py
-```
-
-Admin publishes a skill → employees in the assigned department receive it automatically on next session. No manual download. No re-configuration.
-
-### 3. Access Control (RBAC)
-
-Granular access at both individual and department level.
+### Access Control (RBAC)
+Fine-grained access at department and individual level. When an employee connects via MCP, Arkon resolves their identity, department, and knowledge scope — then filters what they can query.
 
 ```
-Sales dept        → skill: sales-email-writer, knowledge: customer-profiles
-Support dept      → skill: ticket-responder, knowledge: product-faqs
-HR dept           → skill: policy-advisor, knowledge: internal-sops
-Individual user   → override: additional skills or restricted access
+Sales dept     → knowledge: product catalog, customer profiles
+Support dept   → knowledge: FAQs, troubleshooting SOPs
+HR dept        → knowledge: internal policies, org structure
+Individual     → personal scope override if needed
 ```
 
-Admins control:
-- Which skills each department can use
-- Which knowledge scopes each role can query
-- Version pinning per team (prevent auto-upgrade to breaking versions)
-- Revocation and rollback
+### Projects
+Cross-functional knowledge contexts for initiatives that don't fit neatly into a department.
 
-### 4. Webhook Gateway
+Create a **Project** (client engagement, product launch, board prep) → add members from any department → attach relevant documents. Project members get access to those documents through MCP automatically. When the project ends, archive it.
 
-Arkon's knowledge base exposes a configurable webhook endpoint - allowing the same knowledge graph to power external touchpoints without duplication.
+### MCP Server
+Employees connect Claude Desktop to Arkon's MCP server using a personal token. Tools available in Claude:
 
-Use cases:
-- **Customer support chatbot** - connects to product and FAQ knowledge
-- **Zalo OA** - routes customer queries through the same internal knowledge
-- **Any webhook-compatible platform** - configurable per deployment
-
-Each webhook endpoint is independently scoped, authenticated, and rate-limited. Customer-facing endpoints never expose internal SOP or HR knowledge.
+| Tool | Description |
+|---|---|
+| `search_knowledge` | Semantic search across accessible documents |
+| `get_document` | Retrieve full document content |
+| `list_sources` | Browse available documents |
+| `list_categories` | Browse knowledge type tree |
+| `find_contacts` | Search the internal people directory |
+| `get_category_knowledge` | Retrieve all docs of a specific type |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  On-Premise Server               │
-│                                                  │
-│  ┌──────────────┐    ┌──────────────────────┐   │
-│  │ Admin Portal │    │   Arkon MCP Server   │   │
-│  │              │    │                      │   │
-│  │ · Skills     │───▶│ · Skill Registry     │   │
-│  │ · Knowledge  │    │ · Knowledge Graph    │   │
-│  │ · RBAC       │    │ · Auth & Policy      │   │
-│  │ · Versions   │    │ · Webhook Gateway    │   │
-│  └──────────────┘    └──────────┬───────────┘   │
-│                                 │                │
-└─────────────────────────────────┼────────────────┘
-                                  │ MCP (HTTPS)
-                    ┌─────────────┼─────────────┐
-                    │             │             │
-             Claude Desktop  Claude.ai     Other MCP
-             (employee)      (web)         clients
+┌──────────────────────────────────────────────────┐
+│                  On-Premise Server                │
+│                                                   │
+│  ┌───────────────┐    ┌────────────────────────┐  │
+│  │  Admin Portal │    │    Arkon API + MCP     │  │
+│  │               │    │                        │  │
+│  │  · Knowledge  │───▶│  · Knowledge Graph     │  │
+│  │  · RBAC       │    │  · Scope Resolution    │  │
+│  │  · Projects   │    │  · MCP Tool Server     │  │
+│  │  · Contacts   │    │  · Auth & Tokens       │  │
+│  └───────────────┘    └───────────┬────────────┘  │
+│                                   │               │
+└───────────────────────────────────┼───────────────┘
+                                    │ MCP (HTTPS)
+                       ┌────────────┼────────────┐
+                       │            │            │
+                Claude Desktop   Claude.ai   Any MCP
+                (employees)      (web)       client
 ```
+
+**Stack:**
+- **Backend** — FastAPI, PostgreSQL + pgvector, Redis (arq), MinIO
+- **Frontend** — Next.js, Tailwind CSS
+- **Optional** — Neo4j for knowledge graph entity extraction
+- **Outbound** — Claude API (Anthropic) only. No other external calls.
 
 ---
 
-## How Employees Connect
+## Getting Started
 
-One-time setup. Employees run the Arkon installer provided by their IT admin:
+### Prerequisites
+
+- Docker and Docker Compose
+- A Claude API key from [Anthropic](https://console.anthropic.com)
+
+### 1. Clone and configure
 
 ```bash
-# Arkon CLI - auto-configures Claude Desktop
-arkon connect --server https://ai.company.internal --token <employee-token>
+git clone https://github.com/your-org/arkon.git
+cd arkon
+cp .env.example .env
 ```
 
-This adds the MCP server to Claude Desktop config automatically:
+Edit `.env` — at minimum set:
+
+```env
+SECRET_KEY=your-random-secret-here
+DEFAULT_ADMIN_EMAIL=admin@yourcompany.com
+DEFAULT_ADMIN_PASSWORD=change-this-password
+```
+
+### 2. Start services
+
+```bash
+docker compose up -d
+```
+
+This starts PostgreSQL, Redis, MinIO, the API server, the background worker, and the frontend portal.
+
+### 3. Configure AI providers
+
+Open the admin portal at `http://localhost:3000` and log in with the credentials from your `.env`.
+
+Go to **Settings** and configure your embedding model, LLM, and (optionally) vision model. Arkon supports Google, OpenAI, and Anthropic providers.
+
+### 4. Connect an employee to Claude
+
+1. Create a department and employee account in the portal
+2. Generate an MCP token for the employee (`Employees → Token`)
+3. Add the MCP server to Claude Desktop's config:
 
 ```json
 {
   "mcpServers": {
     "arkon": {
-      "url": "https://ai.company.internal/mcp",
-      "headers": { "Authorization": "Bearer <token>" }
+      "url": "https://your-arkon-server/mcp",
+      "headers": {
+        "Authorization": "Bearer <employee-mcp-token>"
+      }
     }
   }
 }
 ```
 
-After this, employees open Claude Desktop as usual. Skills and knowledge for their department are available immediately - no further action required.
+The employee opens Claude Desktop — knowledge and context for their scope are available immediately.
 
 ---
 
-## Skill Lifecycle
+## Project Structure
 
 ```
-Admin uploads skill v2.0
-        ↓
-Arkon registry updates
-        ↓
-Employee opens new conversation
-        ↓
-MCP server resolves: user → dept → skills → latest version
-        ↓
-Skill injected into context automatically
+arkon/
+├── app/
+│   ├── routers/          # API endpoints (sources, rbac, projects, ...)
+│   ├── services/         # Auth, MCP auth, KB ingestion, storage
+│   ├── database/         # SQLAlchemy models, vector search, repository
+│   ├── ai/               # Provider-agnostic embedding, LLM, vision
+│   ├── mcp/              # MCP server, tools, resources
+│   └── worker.py         # Background ingestion jobs (arq)
+├── frontend/
+│   └── src/
+│       ├── app/(portal)/ # Admin portal pages
+│       └── components/   # UI components
+└── alembic/              # Database migrations
 ```
-
-Admins can configure update policy per skill:
-- `auto` - always serve latest version
-- `pinned` - lock a department to a specific version
-- `manual` - require admin approval before rollout
-
----
-
-## Deployment
-
-Arkon is designed for on-premise deployment inside the customer's network. All data stays within the organization's infrastructure.
-
-**Requirements:**
-- Docker / Docker Compose
-- HTTPS endpoint accessible from employee machines
-- Claude API key (Anthropic)
-
-**External calls:**
-- Claude API (Anthropic) - for LLM inference only
-- No other outbound dependencies
 
 ---
 
 ## Roadmap
 
-- [x] MCP Server core
-- [x] Knowledge Base (Graph RAG) via MCP
-- [x] Skill Registry with versioning
-- [x] RBAC (individual + department)
-- [x] Webhook Gateway
-- [x] Admin Portal UI
-- [ ] Arkon CLI installer
-- [ ] Staff Contributing
-- [ ] Audit logs & usage analytics
-- [ ] SSO integration (Active Directory / Google Workspace)
-- [ ] Any other ideas that came up at 3 a.m
+- [x] MCP Server with scoped knowledge retrieval
+- [x] Document ingestion pipeline (PDF, DOCX, URLs, images)
+- [x] Knowledge types and department-level RBAC
+- [x] Project contexts for cross-functional access
+- [x] Admin portal UI
+- [x] Contacts directory
+- [ ] Employee knowledge contribution (flag, annotate, suggest)
+- [ ] Audit logs and usage analytics
+- [ ] SSO (Active Directory, Google Workspace, SAML)
+- [ ] Arkon CLI for one-command employee setup
+
+---
+
+## Contributing
+
+Pull requests are welcome. For significant changes, open an issue first to discuss what you'd like to change.
 
 ---
 
@@ -180,6 +191,12 @@ Arkon is designed for on-premise deployment inside the customer's network. All d
 
 Arkon is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0).
 
-You may use, study, and modify Arkon for **noncommercial purposes** only. Commercial use - including deploying Arkon as part of a paid product or service, or using it within a for-profit organization - requires a separate commercial license.
+You may use, study, and modify Arkon freely for **noncommercial purposes** — internal tooling, research, personal projects, and non-profit use are all fine.
 
-Contact us for commercial licensing and enterprise deployment options.
+**Need something beyond that?** We help organizations integrate Claude, custom AI agents, and MCP servers into their existing infrastructure and workflows — from connecting to internal databases and legacy systems to building purpose-built agents for specific business processes.
+
+[Get in touch](https://bitsness.vn) if you're looking to build something custom.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=nduckmink/arkon&type=Date)](https://star-history.com/#nduckmink/arkon&Date)

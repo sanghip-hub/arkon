@@ -26,16 +26,23 @@ type KnowledgeType = {
   color: string;
 };
 
+type Department = {
+  id: string;
+  name: string;
+};
+
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   types: KnowledgeType[];
+  departments: Department[];
   onUploaded: () => void;
 };
 
-export function UploadDialog({ open, onOpenChange, types, onUploaded }: Props) {
+export function UploadDialog({ open, onOpenChange, types, departments, onUploaded }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [typeId, setTypeId] = useState("");
+  const [deptId, setDeptId] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
 
@@ -48,12 +55,14 @@ export function UploadDialog({ open, onOpenChange, types, onUploaded }: Props) {
       const formData = new FormData();
       formData.append("file", file);
       if (typeId) formData.append("knowledge_type_id", typeId);
+      if (deptId) formData.append("department_id", deptId);
 
       await apiUpload("/api/sources/upload", formData);
       onUploaded();
       onOpenChange(false);
       setFile(null);
       setTypeId("");
+      setDeptId("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -104,6 +113,23 @@ export function UploadDialog({ open, onOpenChange, types, onUploaded }: Props) {
                       />
                       {t.name}
                     </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Department */}
+          <div className="flex flex-col gap-2">
+            <Label>Department</Label>
+            <Select value={deptId} onValueChange={(v) => v && setDeptId(v)}>
+              <SelectTrigger className="bg-background">
+                <SelectValue placeholder="Select department (optional)" />
+              </SelectTrigger>
+              <SelectContent>
+                {departments.map((d) => (
+                  <SelectItem key={d.id} value={d.id}>
+                    {d.name}
                   </SelectItem>
                 ))}
               </SelectContent>

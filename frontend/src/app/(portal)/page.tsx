@@ -19,14 +19,15 @@ type DashboardStats = {
 export default function DashboardPage() {
   const { user } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [statsError, setStatsError] = useState(false);
 
   useEffect(() => {
     async function load() {
+      setStatsError(false);
       try {
-        // Gather stats from various endpoints
-        const sourcesRes = await api<{ total: number }>("/api/sources?limit=1");
+        const sources = await api<unknown[]>("/api/sources");
         const stats: DashboardStats = {
-          total_sources: sourcesRes.total || 0,
+          total_sources: Array.isArray(sources) ? sources.length : 0,
           total_chunks: 0,
         };
 
@@ -35,24 +36,20 @@ export default function DashboardPage() {
             const depts = await api<unknown[]>("/api/departments");
             stats.departments = Array.isArray(depts) ? depts.length : 0;
           } catch {
-            stats.departments = 0;
+            stats.departments = undefined;
           }
           try {
             const emps = await api<unknown[]>("/api/employees");
             stats.employees = Array.isArray(emps) ? emps.length : 0;
           } catch {
-            stats.employees = 0;
+            stats.employees = undefined;
           }
         }
 
         setStats(stats);
       } catch {
-        setStats({
-          total_sources: 0,
-          total_chunks: 0,
-          departments: 0,
-          employees: 0,
-        });
+        setStatsError(true);
+        setStats({ total_sources: 0, total_chunks: 0 });
       }
     }
     load();
@@ -64,6 +61,13 @@ export default function DashboardPage() {
         title="Enterprise Overview"
         description="Monitor the health and scale of your AI knowledge ecosystem."
       />
+
+      {statsError && (
+        <div className="text-sm text-destructive bg-destructive/10 px-4 py-3 rounded-lg flex items-center gap-2">
+          <span className="material-symbols-outlined text-base">warning</span>
+          Could not load dashboard statistics. Check your connection or try refreshing.
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">

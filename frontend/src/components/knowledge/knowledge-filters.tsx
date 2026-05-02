@@ -9,38 +9,81 @@ type KnowledgeType = {
   color: string;
 };
 
+type Department = {
+  id: string;
+  name: string;
+};
+
 type Props = {
   types: KnowledgeType[];
   selectedType: string | null;
   onSelectType: (slug: string | null) => void;
+  departments: Department[];
+  selectedDepartment: string | null;
+  onSelectDepartment: (id: string | null) => void;
 };
 
-export function KnowledgeFilters({ types, selectedType, onSelectType }: Props) {
+export function KnowledgeFilters({
+  types,
+  selectedType,
+  onSelectType,
+  departments,
+  selectedDepartment,
+  onSelectDepartment,
+}: Props) {
   return (
-    <div className="bg-card rounded-xl p-5 border border-border shadow-sahara">
-      <h4 className="text-sm font-semibold text-foreground mb-3">
-        Knowledge Type
-      </h4>
-
-      <div className="flex flex-col gap-1">
-        <FilterItem
-          label="All Documents"
-          active={selectedType === null}
-          onClick={() => onSelectType(null)}
-        />
-
-        {types.map((type) => (
+    <div className="flex flex-col gap-4">
+      {/* Knowledge Type filter */}
+      <div className="bg-card rounded-xl p-5 border border-border shadow-sahara">
+        <h4 className="text-sm font-semibold text-foreground mb-3">
+          Knowledge Type
+        </h4>
+        <div className="flex flex-col gap-1">
           <FilterItem
-            key={type.slug}
-            label={type.name}
-            color={type.color}
-            active={selectedType === type.slug}
-            onClick={() =>
-              onSelectType(selectedType === type.slug ? null : type.slug)
-            }
+            label="All Types"
+            active={selectedType === null}
+            onClick={() => onSelectType(null)}
           />
-        ))}
+          {types.map((type) => (
+            <FilterItem
+              key={type.slug}
+              label={type.name}
+              color={type.color}
+              active={selectedType === type.slug}
+              onClick={() =>
+                onSelectType(selectedType === type.slug ? null : type.slug)
+              }
+            />
+          ))}
+        </div>
       </div>
+
+      {/* Department filter */}
+      {departments.length > 0 && (
+        <div className="bg-card rounded-xl p-5 border border-border shadow-sahara">
+          <h4 className="text-sm font-semibold text-foreground mb-3">
+            Department
+          </h4>
+          <div className="flex flex-col gap-1">
+            <FilterItem
+              label="All Departments"
+              active={selectedDepartment === null}
+              onClick={() => onSelectDepartment(null)}
+            />
+            {departments.map((dept) => (
+              <FilterItem
+                key={dept.id}
+                label={dept.name}
+                icon="corporate_fare"
+                active={selectedDepartment === dept.id}
+                onClick={() =>
+                  onSelectDepartment(selectedDepartment === dept.id ? null : dept.id)
+                }
+              />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -48,11 +91,13 @@ export function KnowledgeFilters({ types, selectedType, onSelectType }: Props) {
 function FilterItem({
   label,
   color,
+  icon,
   active,
   onClick,
 }: {
   label: string;
   color?: string;
+  icon?: string;
   active: boolean;
   onClick: () => void;
 }) {
@@ -72,7 +117,9 @@ function FilterItem({
           style={{ backgroundColor: color }}
         />
       ) : (
-        <span className="material-symbols-outlined text-sm">select_all</span>
+        <span className="material-symbols-outlined text-sm">
+          {icon || "select_all"}
+        </span>
       )}
       {label}
     </button>

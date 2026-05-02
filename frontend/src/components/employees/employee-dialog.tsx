@@ -145,7 +145,7 @@ export function EmployeeDialog({
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={isEdit ? "••••••" : "Min 6 characters"}
+              placeholder={isEdit ? "••••••••" : "Min 8 characters"}
               className="bg-background"
             />
           </div>
