@@ -1,0 +1,133 @@
+"""Add skills, skill_versions, tags and skill_tags tables.
+
+Revision ID: 006
+Revises: 005
+Create Date: 2026-05-03
+"""
+
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+revision = "006"
+down_revision = "005"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    # 1. Create skill_status enum type (check if exists first)
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_enums = [e['name'] for e in inspector.get_enums()]
+    
+    if "skill_status" not in existing_enums:
+        skill_status = postgresql.ENUM("active", "processing", "deleting", "deprecated", "archived", name="skill_status")
+        skill_status.create(bind)
+
+    # 2. Create skills table
+    op.create_table(
+        "skills",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("name", sa.String(200), nullable=False, unique=True),
+        sa.Column("slug", sa.String(200), nullable=False, unique=True),
+        sa.Column("description", sa.Text, nullable=True),
+        sa.Column(
+            "department_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("departments.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column("current_version", sa.Integer, nullable=False, server_default="1"),
+        sa.Column("version_hash", sa.String(64), nullable=True),
+        sa.Column("storage_path", sa.String(1000), nullable=True),
+        sa.Column(
+            "status",
+            postgresql.ENUM("active", "processing", "deleting", "deprecated", "archived", name="skill_status", create_type=False),
+            nullable=False,
+            server_default="active",
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            onupdate=sa.func.now(),
+            nullable=False,
+        ),
+    )
+    op.create_index("ix_skills_slug", "skills", ["slug"], unique=True)
+    op.create_index("ix_skills_department_id", "skills", ["department_id"])
+
+    # 3. Create skill_versions table
+    op.create_table(
+        "skill_versions",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "skill_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("skills.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("version_number", sa.Integer, nullable=False),
+        sa.Column("version_hash", sa.String(64), nullable=True),
+        sa.Column("storage_path", sa.String(1000), nullable=True),
+        sa.Column("changelog", sa.Text, nullable=True),
+        sa.Column(
+            "created_by",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("employees.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+    )
+    op.create_index("ix_skill_versions_skill_id", "skill_versions", ["skill_id"])
+
+    # 4. Create tags table
+    op.create_table(
+        "tags",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("name", sa.String(100), nullable=False, unique=True),
+    )
+
+    # 5. Create skill_tags association table
+    op.create_table(
+        "skill_tags",
+        sa.Column(
+            "skill_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("skills.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "tag_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("tags.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+    )
+
+
+def downgrade() -> None:
+    op.drop_table("skill_tags")
+    op.drop_table("tags")
+    op.drop_index("ix_skill_versions_skill_id", table_name="skill_versions")
+    op.drop_table("skill_versions")
+    op.drop_index("ix_skills_department_id", table_name="skills")
+    op.drop_index("ix_skills_slug", table_name="skills")
+    op.drop_table("skills")
+    
+    # Drop enum type
+    bind = op.get_bind()
+    skill_status = postgresql.ENUM("active", "processing", "deleting", "deprecated", "archived", name="skill_status")
+    skill_status.drop(bind)

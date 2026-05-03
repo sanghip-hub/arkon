@@ -8,9 +8,13 @@ Start with:
     arq app.worker.WorkerSettings
 """
 
+import io
 import uuid
+import zipfile
+from typing import Callable, Optional
 
-from arq.connections import RedisSettings
+from arq import cron
+from arq.connections import RedisSettings, ArqRedis, create_pool
 from loguru import logger
 
 from app.config import settings
@@ -23,6 +27,18 @@ def _get_redis_settings() -> RedisSettings:
         database=settings.redis_db,
         password=settings.redis_password or None,
     )
+
+
+# arq Redis pool (lazy init)
+_arq_pool: Optional[ArqRedis] = None
+
+
+async def get_arq_pool() -> ArqRedis:
+    """Lazy-init arq Redis connection pool."""
+    global _arq_pool
+    if _arq_pool is None:
+        _arq_pool = await create_pool(_get_redis_settings())
+    return _arq_pool
 
 
 # ---------------------------------------------------------------------------
@@ -316,10 +332,126 @@ async def reingest_file_task(ctx: dict, source_id: str, force: bool = False):
 # Worker configuration
 # ---------------------------------------------------------------------------
 
+
+async def ingest_skill_task(ctx: dict, skill_id: str, version_id: str, file_data: bytes, file_name: str):
+    """
+    arq task: unzip skill package, store in MinIO, and extract metadata.
+    """
+    from app.database import async_session_factory
+    from app.database.models import Skill, SkillVersion
+    from app.services.storage_service import storage_service
+
+    sid = uuid.UUID(skill_id)
+    vid = uuid.UUID(version_id)
+    skill_name = file_name.rsplit(".", 1)[0]
+    
+    logger.info(f"Starting ingestion for skill: {skill_name} ({skill_id})")
+
+    async with async_session_factory() as session:
+        skill = await session.get(Skill, sid)
+        version = await session.get(SkillVersion, vid)
+        
+        if not skill or not version:
+            logger.error(f"Skill {skill_id} or Version {version_id} not found in DB")
+            return
+
+        try:
+            skill.status = "processing"
+            await session.commit()
+
+            # 1. Unzip and upload to MinIO
+            readme_content = None
+            with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    
+                    with zf.open(member) as f:
+                        content = f.read()
+                        
+                        # Define MinIO key: skills/{id}/versions/{v}/content/{path}
+                        object_name = f"skills/{skill_id}/versions/{version.version_number}/content/{member.filename}"
+                        
+                        # Guess content type
+                        from app.services.kb_service import _guess_content_type
+                        storage_service.upload_file(
+                            object_name=object_name,
+                            data=content,
+                            content_type=_guess_content_type(member.filename)
+                        )
+
+                        # Check for SKILL.md
+                        # User said it's inside a folder with the same name: {skill_name}/SKILL.md
+                        target_readme = f"{skill_name}/SKILL.md".lower()
+                        if member.filename.lower() == target_readme or member.filename.lower().endswith("/skill.md"):
+                            readme_content = content.decode("utf-8", errors="ignore")
+                            logger.info(f"Found SKILL.md in {member.filename}")
+
+            # 2. Update DB with extracted metadata
+            if readme_content:
+                skill.description = readme_content
+                version.readme = readme_content
+            
+            # Store hash (calculated in API but re-confirming here)
+            import hashlib
+            file_hash = hashlib.sha256(file_data).hexdigest()
+            
+            skill.version_hash = file_hash
+            skill.current_version = version.version_number
+            skill.storage_path = f"skills/{skill_id}/versions/{version.version_number}/content/"
+            skill.status = "active"
+            
+            version.version_hash = file_hash
+            version.storage_path = skill.storage_path
+            
+            await session.commit()
+            logger.success(f"Skill {skill_name} version {version.version_number} processed successfully")
+
+        except Exception as e:
+            logger.exception(f"Failed to process skill {skill_name}: {e}")
+            skill.status = "error"
+            await session.commit()
+
+
+async def delete_skill_task(ctx: dict, skill_id: str):
+    """
+    arq task: delete skill files from MinIO and remove from DB.
+    """
+    from app.database import async_session_factory
+    from app.database.models import Skill
+    from app.services.storage_service import storage_service
+
+    sid = uuid.UUID(skill_id)
+    
+    logger.info(f"Starting deletion task for skill: {skill_id}")
+
+    async with async_session_factory() as session:
+        skill = await session.get(Skill, sid)
+        if not skill:
+            logger.warning(f"Skill {skill_id} already deleted or not found")
+            return
+
+        try:
+            # 1. Delete files from MinIO (prefix: skills/{skill_id}/)
+            prefix = f"skills/{skill_id}/"
+            storage_service.delete_prefix(prefix)
+            
+            # 2. Delete skill from DB (cascades to SkillVersion if configured, 
+            # but let's be explicit if needed or trust the model relationship)
+            await session.delete(skill)
+            await session.commit()
+            
+            logger.success(f"Skill {skill_id} and all assets deleted successfully")
+
+        except Exception as e:
+            logger.exception(f"Failed to delete skill {skill_id}: {e}")
+            raise
+
+
 class WorkerSettings:
     """arq worker configuration."""
 
-    functions = [ingest_file_task, ingest_url_task, reingest_file_task]
+    functions = [ingest_file_task, ingest_url_task, reingest_file_task, ingest_skill_task, delete_skill_task]
     redis_settings = _get_redis_settings()
     max_jobs = settings.worker_max_jobs
     job_timeout = settings.worker_job_timeout

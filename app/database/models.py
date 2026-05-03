@@ -12,6 +12,7 @@ from enum import Enum as PyEnum
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
+import sqlalchemy as sa
 from sqlalchemy import (
     DateTime,
     ForeignKey,
@@ -24,7 +25,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID, ENUM as PgEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -330,6 +331,8 @@ class Department(Base):
     source_departments: Mapped[list["SourceDepartment"]] = relationship(
         back_populates="department", cascade="all, delete-orphan"
     )
+    sources: Mapped[list["Source"]] = relationship(back_populates="department")
+    skills: Mapped[list["Skill"]] = relationship(back_populates="department")
 
 
 class Employee(Base):
@@ -488,7 +491,117 @@ class ProjectSource(Base):
 
 
 # ---------------------------------------------------------------------------
-# Audit Log
+# AI Skills — Versioned prompt packages and tools
+# ---------------------------------------------------------------------------
+
+skill_tags = sa.Table(
+    "skill_tags",
+    Base.metadata,
+    sa.Column(
+        "skill_id",
+        UUID(as_uuid=True),
+        ForeignKey("skills.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    sa.Column(
+        "tag_id",
+        UUID(as_uuid=True),
+        ForeignKey("tags.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
+
+
+class Tag(Base):
+    __tablename__ = "tags"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+
+    # Relationships
+    skills: Mapped[list["Skill"]] = relationship(
+        secondary=skill_tags, back_populates="tags"
+    )
+
+
+class Skill(Base):
+    """
+    An AI Skill package (e.g. 'document-generator').
+    Can be scoped to a department or global (NULL department).
+    """
+    __tablename__ = "skills"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    slug: Mapped[str] = mapped_column(String(200), nullable=False, unique=True, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    department_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("departments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    current_version: Mapped[int] = mapped_column(Integer, default=1)
+    version_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    storage_path: Mapped[Optional[str]] = mapped_column(String(1000))
+    status: Mapped[str] = mapped_column(
+        PgEnum("active", "processing", "deleting", "deprecated", "archived", name="skill_status"),
+        server_default="active",
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    department: Mapped[Optional["Department"]] = relationship(back_populates="skills")
+    versions: Mapped[list["SkillVersion"]] = relationship(
+        back_populates="skill", cascade="all, delete-orphan"
+    )
+    tags: Mapped[list["Tag"]] = relationship(
+        secondary=skill_tags, back_populates="tags"
+    )
+
+
+class SkillVersion(Base):
+    """Specific version of a skill."""
+    __tablename__ = "skill_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    skill_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("skills.id", ondelete="CASCADE")
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    version_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    storage_path: Mapped[Optional[str]] = mapped_column(String(1000))
+    changelog: Mapped[Optional[str]] = mapped_column(Text)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("employees.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # Relationships
+    skill: Mapped["Skill"] = relationship(back_populates="versions")
+    author: Mapped[Optional["Employee"]] = relationship()
+
+    __table_args__ = (
+        Index("ix_skill_versions_skill_id", "skill_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scope-based RBAC: Membership & Audit
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 class AuditLog(Base):
